@@ -1,0 +1,26 @@
+{
+  "name": "japanese-chat",
+  "version": "1.0.0",
+  "description": "A Japanese chat site with real-time messaging",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "^4.1.11",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "socket.io": "^4.7.4",
+    "socket.io-client": "^4.8.1",
+    "tailwindcss": "^4.1.11"
+  },
+  "keywords": [
+    "japanese",
+    "chat",
+    "socket.io",
+    "nodejs"
+  ],
+  "author": "",
+  "license": "MIT"
+}

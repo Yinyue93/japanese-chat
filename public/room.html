@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>チャットルーム - Japanese Chat</title>
+    <link rel="stylesheet" href="/output.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans JP', sans-serif; }
+        .messages-container {
+            height: calc(100vh - 400px);
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+        .messages-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        .messages-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .messages-container::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 10px;
+        }
+        .messages-container::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-indigo-50 to-purple-50 min-h-screen">
+    <!-- Notification Sound -->
+    <audio id="notificationSound" preload="auto">
+        <source src="/sounds/sound.mp3" type="audio/mpeg">
+        Your browser does not support the audio element.
+    </audio>
+    <div class="container mx-auto px-4 py-4 max-w-4xl">
+        <!-- Header -->
+        <div class="bg-white rounded-2xl shadow-lg p-4 mb-4">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 id="roomName" class="text-2xl font-bold text-gray-800">チャットルーム</h1>
+                    <p class="text-gray-600">参加者: <span id="userCount" class="font-semibold text-indigo-600">0</span>人</p>
+                </div>
+                <button id="leaveRoomBtn" 
+                        class="bg-gradient-to-r from-red-500 to-pink-600 text-white px-6 py-3 rounded-xl font-medium hover:from-red-600 hover:to-pink-700 transform transition-all duration-200 hover:scale-105 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
+                    退室
+                </button>
+            </div>
+        </div>
+        
+        <!-- Chat Messages -->
+        <div class="bg-white rounded-2xl shadow-lg p-4 mb-4">
+            <div id="messagesContainer" class="messages-container space-y-3 mb-4" style="min-height: 400px;">
+                <div id="noMessages" class="text-center py-12">
+                    <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"></path>
+                        <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"></path>
+                    </svg>
+                    <p class="text-gray-500 text-lg">まだメッセージがありません</p>
+                    <p class="text-gray-400 text-sm mt-2">最初のメッセージを送ってみましょう！</p>
+                </div>
+            </div>
+            
+            <!-- Message Input -->
+            <div class="border-t border-gray-200 pt-4">
+                <form id="messageForm" class="flex space-x-4">
+                    <input type="text" 
+                           id="messageInput" 
+                           placeholder="メッセージを入力してください..." 
+                           maxlength="500"
+                           class="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200 text-gray-800"
+                           autocomplete="off">
+                    <button type="submit" 
+                            class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl font-medium hover:from-indigo-600 hover:to-purple-700 transform transition-all duration-200 hover:scale-105 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                        送信
+                    </button>
+                </form>
+                <p class="text-xs text-gray-500 mt-2">最大500文字まで</p>
+            </div>
+        </div>
+        
+        <!-- User List -->
+        <div id="userList" class="bg-white rounded-2xl shadow-lg p-4">
+            <h3 class="text-lg font-semibold text-gray-800 mb-3">参加者一覧</h3>
+            <div id="userListContent" class="flex flex-wrap gap-2">
+                <!-- Users will be listed here -->
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const socket = io();
+        const username = localStorage.getItem('username');
+        const roomId = window.location.pathname.split('/')[2];
+        
+        if (!username || !roomId) {
+            window.location.href = '/lounge';
+        }
+        
+        let userCount = 0;
+        
+
+        
+        // Join the room directly - server will handle validation
+        console.log('Attempting to join room:', { roomId, username });
+        socket.emit('join-room', { roomId, username });
+        
+        // Add timeout to detect if room join fails  
+        setTimeout(() => {
+            if (document.getElementById('roomName').textContent === 'チャットルーム') {
+                console.error('Room join may have failed - room name not updated');
+                alert('部屋への参加に失敗しました。ラウンジに戻ります。');
+                window.location.href = '/lounge';
+            }
+        }, 5000);
+        
+        // Socket event listeners
+        socket.on('joined-room', (data) => {
+            console.log('Successfully joined room:', data);
+            document.getElementById('roomName').textContent = data.roomName;
+        });
+        
+        socket.on('join-room-error', (data) => {
+            console.error('Failed to join room:', data.error);
+            alert(`部屋への参加に失敗しました: ${data.error}`);
+            window.location.href = '/lounge';
+        });
+        
+        socket.on('connect', () => {
+            console.log('Socket connected successfully');
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Socket disconnected');
+            alert('サーバーとの接続が切断されました。');
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('Socket connection error:', error);
+            alert('サーバーへの接続に失敗しました。');
+        });
+        
+        socket.on('room-messages', (messages) => {
+            const noMessagesDiv = document.getElementById('noMessages');
+            const messagesContainer = document.getElementById('messagesContainer');
+            
+            if (messages.length > 0) {
+                noMessagesDiv.style.display = 'none';
+                messages.forEach(message => {
+                    addMessageToUI(message);
+                });
+                scrollToBottom();
+            }
+        });
+        
+        socket.on('new-message', (message) => {
+            console.log('Received new message:', message);
+            const noMessagesDiv = document.getElementById('noMessages');
+            noMessagesDiv.style.display = 'none';
+            addMessageToUI(message);
+            scrollToBottom();
+            
+            // Play notification sound for messages from other users
+            if (message.username !== username) {
+                playNotificationSound();
+            }
+        });
+        
+        socket.on('message-error', (data) => {
+            console.error('Message sending failed:', data.error);
+            alert(`メッセージの送信に失敗しました: ${data.error}`);
+        });
+        
+        socket.on('user-joined', (data) => {
+            userCount = data.userCount;
+            document.getElementById('userCount').textContent = userCount;
+            addSystemMessage(`${data.username}さんが入室しました`);
+            scrollToBottom();
+        });
+        
+        socket.on('user-left', (data) => {
+            userCount = data.userCount;
+            document.getElementById('userCount').textContent = userCount;
+            addSystemMessage(`${data.username}さんが退室しました`);
+            scrollToBottom();
+        });
+        
+        // Message form submission
+        document.getElementById('messageForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            sendMessage();
+        });
+        
+        // Function to send message
+        function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+            
+            if (message.length === 0) return;
+            if (message.length > 500) {
+                alert('メッセージは500文字以下で入力してください');
+                return;
+            }
+            
+            // Check socket connection
+            if (!socket.connected) {
+                alert('サーバーに接続されていません。ページを更新してください。');
+                return;
+            }
+            
+            console.log('Sending message:', { roomId, message, username });
+            socket.emit('send-message', { roomId, message, username });
+            messageInput.value = '';
+        }
+        
+        // Leave room button
+        document.getElementById('leaveRoomBtn').addEventListener('click', () => {
+            if (confirm('本当に退室しますか？')) {
+                socket.emit('leave-room');
+                window.location.href = '/lounge';
+            }
+        });
+        
+        // Functions
+        function addMessageToUI(message) {
+            const messagesContainer = document.getElementById('messagesContainer');
+            const isOwnMessage = message.username === username;
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`;
+            
+            const timestamp = new Date(message.timestamp);
+            const timeString = timestamp.toLocaleTimeString('ja-JP', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            
+            messageDiv.innerHTML = `
+                <div class="${isOwnMessage 
+                    ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white' 
+                    : 'bg-gray-100 text-gray-800'
+                } max-w-xs lg:max-w-md px-4 py-2 rounded-2xl">
+                    <div class="font-semibold text-sm ${isOwnMessage ? 'text-indigo-100' : 'text-gray-600'} mb-1">
+                        ${message.username}
+                    </div>
+                    <div class="break-words">${escapeHtml(message.message)}</div>
+                    <div class="text-xs ${isOwnMessage ? 'text-indigo-200' : 'text-gray-500'} mt-1 text-right">
+                        ${timeString}
+                    </div>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(messageDiv);
+        }
+        
+        function addSystemMessage(message) {
+            const messagesContainer = document.getElementById('messagesContainer');
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'flex justify-center';
+            
+            messageDiv.innerHTML = `
+                <div class="bg-yellow-100 text-yellow-800 px-4 py-2 rounded-full text-sm">
+                    ${escapeHtml(message)}
+                </div>
+            `;
+            
+            messagesContainer.appendChild(messageDiv);
+        }
+        
+        function scrollToBottom() {
+            const messagesContainer = document.getElementById('messagesContainer');
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function playNotificationSound() {
+            try {
+                const notificationSound = document.getElementById('notificationSound');
+                if (notificationSound) {
+                    // Reset audio to beginning in case it was already playing
+                    notificationSound.currentTime = 0;
+                    const playPromise = notificationSound.play();
+                    
+                    // Handle browser autoplay policies
+                    if (playPromise !== undefined) {
+                        playPromise.catch(error => {
+                            console.log('Could not play notification sound:', error.message);
+                        });
+                    }
+                }
+            } catch (error) {
+                console.log('Error playing notification sound:', error);
+            }
+        }
+        
+        // Handle page unload
+        window.addEventListener('beforeunload', () => {
+            socket.emit('leave-room');
+        });
+        
+        // Focus on message input
+        document.getElementById('messageInput').focus();
+        
+        // Enter key to send message
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html> 

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ラウンジ - Japanese Chat</title>
+    <link rel="stylesheet" href="/output.css">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans JP', sans-serif; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-green-50 to-blue-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="bg-white rounded-2xl shadow-lg p-6 mb-6">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800 mb-2">チャットラウンジ</h1>
+                    <p class="text-gray-600">ようこそ、<span id="usernameDisplay" class="font-semibold text-blue-600"></span>さん</p>
+                </div>
+                <div class="flex space-x-3">
+                    <button id="createRoomBtn" 
+                            class="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-6 py-3 rounded-xl font-medium hover:from-green-600 hover:to-emerald-700 transform transition-all duration-200 hover:scale-105 focus:ring-2 focus:ring-green-500 focus:ring-offset-2">
+                        部屋を作る
+                    </button>
+                    <button id="logoutBtn" 
+                            class="bg-gradient-to-r from-red-500 to-pink-600 text-white px-6 py-3 rounded-xl font-medium hover:from-red-600 hover:to-pink-700 transform transition-all duration-200 hover:scale-105 focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
+                        ログアウト
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Room List -->
+        <div class="bg-white rounded-2xl shadow-lg p-6">
+            <div class="flex items-center mb-6">
+                <svg class="w-6 h-6 text-blue-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"></path>
+                    <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"></path>
+                </svg>
+                <h2 class="text-2xl font-bold text-gray-800">利用可能な部屋</h2>
+                <button id="refreshRoomsBtn" class="ml-auto text-blue-600 hover:text-blue-800">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+                    </svg>
+                </button>
+            </div>
+            
+            <div id="roomsList" class="space-y-4">
+                <!-- Rooms will be loaded here -->
+            </div>
+            
+            <div id="noRooms" class="text-center py-12 hidden">
+                <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"></path>
+                </svg>
+                <p class="text-gray-500 text-lg">現在利用可能な部屋がありません</p>
+                <p class="text-gray-400 text-sm mt-2">新しい部屋を作成してチャットを始めましょう！</p>
+                <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+                    💡 <strong>ヒント:</strong> 部屋は最後のユーザーが退室すると自動的に削除されます
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const username = localStorage.getItem('username');
+        const isAdmin = localStorage.getItem('isAdmin') === 'true';
+        
+        if (!username) {
+            window.location.href = '/';
+        }
+        
+        document.getElementById('usernameDisplay').textContent = username;
+        
+        document.getElementById('createRoomBtn').addEventListener('click', () => {
+            window.location.href = '/create-room';
+        });
+        
+        document.getElementById('logoutBtn').addEventListener('click', () => {
+            localStorage.clear();
+            window.location.href = '/';
+        });
+        
+        document.getElementById('refreshRoomsBtn').addEventListener('click', loadRooms);
+        
+        async function loadRooms() {
+            try {
+                const response = await fetch('/api/rooms');
+                const rooms = await response.json();
+                
+                const roomsList = document.getElementById('roomsList');
+                const noRoomsDiv = document.getElementById('noRooms');
+                
+                if (rooms.length === 0) {
+                    roomsList.innerHTML = '';
+                    noRoomsDiv.classList.remove('hidden');
+                } else {
+                    noRoomsDiv.classList.add('hidden');
+                    roomsList.innerHTML = rooms.map(room => {
+                        const hasPassword = room.password !== null;
+                        const currentUsers = room.users.length;
+                        const maxUsers = room.capacity;
+                        const isFull = currentUsers >= maxUsers;
+                        
+                        return `
+                            <div class="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-all duration-200 ${isFull ? 'opacity-60' : ''}">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex-1">
+                                        <div class="flex items-center mb-2">
+                                            <h3 class="text-lg font-semibold text-gray-800 mr-3">${room.name}</h3>
+                                            ${hasPassword ? '<svg class="w-4 h-4 text-yellow-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"></path></svg>' : ''}
+                                        </div>
+                                        <div class="flex items-center text-sm text-gray-600">
+                                            <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                                                <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3z"></path>
+                                            </svg>
+                                            <span>${currentUsers}/${maxUsers}人</span>
+                                        </div>
+                                    </div>
+                                    <button class="enter-room-btn bg-gradient-to-r from-blue-400 to-blue-500 text-white px-6 py-2 rounded-xl font-medium hover:from-blue-500 hover:to-blue-600 transform transition-all duration-200 hover:scale-105 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${isFull ? 'opacity-50 cursor-not-allowed' : ''}" 
+                                            data-room-id="${room.id}" 
+                                            data-has-password="${hasPassword}"
+                                            ${isFull ? 'disabled' : ''}>
+                                        入室
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    // Add event listeners to enter room buttons
+                    document.querySelectorAll('.enter-room-btn').forEach(btn => {
+                        btn.addEventListener('click', (e) => {
+                            if (e.target.disabled) return;
+                            
+                            const roomId = e.target.dataset.roomId;
+                            const hasPassword = e.target.dataset.hasPassword === 'true';
+                            
+                            if (hasPassword) {
+                                window.location.href = `/password-prompt?roomId=${roomId}`;
+                            } else {
+                                window.location.href = `/room/${roomId}`;
+                            }
+                        });
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading rooms:', error);
+            }
+        }
+        
+        // Load rooms on page load
+        loadRooms();
+        
+        // Auto-refresh rooms every 10 seconds
+        setInterval(loadRooms, 10000);
+    </script>
+</body>
+</html> 
