@@ -81,7 +81,7 @@
                 <form id="messageForm" class="flex space-x-4">
                     <input type="text" 
                            id="messageInput" 
-                           placeholder="メッセージを入力してください..." 
+                           placeholder="メッセージを入力してください... (画像も貼り付けできます)" 
                            maxlength="500"
                            class="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200 text-gray-800"
                            autocomplete="off">
@@ -90,7 +90,7 @@
                         送信
                     </button>
                 </form>
-                <p class="text-xs text-gray-500 mt-2">最大500文字まで</p>
+                <p class="text-xs text-gray-500 mt-2">最大500文字まで • 画像をクリップボードからCtrl+V（Cmd+V）で貼り付けできます（5MB以下）</p>
             </div>
         </div>
         
@@ -116,6 +116,9 @@
         let typingUsers = new Set();
         let isTyping = false;
         let typingTimeout;
+        
+        // Image upload functionality
+        let isUploadingImage = false;
         
 
         
@@ -268,6 +271,90 @@
             messageInput.value = '';
         }
         
+        // Function to send image message
+        async function sendImageMessage(imageBlob, filename = 'pasted-image.png') {
+            if (isUploadingImage) {
+                return;
+            }
+            
+            isUploadingImage = true;
+            
+            try {
+                // Create FormData for image upload
+                const formData = new FormData();
+                formData.append('image', imageBlob, filename);
+                formData.append('roomId', roomId);
+                formData.append('username', username);
+                
+                // Show uploading indicator
+                showUploadingMessage();
+                
+                // Upload image to server
+                const response = await fetch('/api/upload-image', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                // Hide uploading indicator
+                hideUploadingMessage();
+                
+                if (result.success) {
+                    // Send image message through socket
+                    const messageData = {
+                        roomId,
+                        username,
+                        message: '', // Empty message for image-only messages
+                        imageUrl: result.imageUrl,
+                        originalname: result.originalname
+                    };
+                    
+                    console.log('Sending image message:', messageData);
+                    socket.emit('send-message', messageData);
+                } else {
+                    alert(`画像のアップロードに失敗しました: ${result.error}`);
+                }
+                
+            } catch (error) {
+                console.error('Error uploading image:', error);
+                hideUploadingMessage();
+                alert('画像のアップロードに失敗しました');
+            } finally {
+                isUploadingImage = false;
+            }
+        }
+        
+        // Paste event listener for images
+        document.addEventListener('paste', async (e) => {
+            // Only handle paste in the message input area
+            if (document.activeElement !== document.getElementById('messageInput')) {
+                return;
+            }
+            
+            const items = e.clipboardData.items;
+            
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                
+                if (item.type.indexOf('image') !== -1) {
+                    e.preventDefault(); // Prevent default paste behavior
+                    
+                    const blob = item.getAsFile();
+                    if (blob) {
+                        // Check file size (5MB limit)
+                        if (blob.size > 5 * 1024 * 1024) {
+                            alert('画像のサイズは5MB以下にしてください');
+                            return;
+                        }
+                        
+                        await sendImageMessage(blob, `pasted-${Date.now()}.png`);
+                    }
+                    break;
+                }
+            }
+        });
+        
         // Leave room button
         document.getElementById('leaveRoomBtn').addEventListener('click', () => {
             if (confirm('本当に退室しますか？')) {
@@ -290,11 +377,28 @@
                 minute: '2-digit' 
             });
             
-            messageDiv.innerHTML = `
-                <div class="${isOwnMessage 
-                    ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white' 
-                    : 'bg-gray-100 text-gray-800'
-                } max-w-xs lg:max-w-md px-4 py-2 rounded-2xl">
+            let messageContent = '';
+            
+            if (message.type === 'image' && message.imageUrl) {
+                // Image message
+                messageContent = `
+                    <div class="font-semibold text-sm ${isOwnMessage ? 'text-indigo-100' : 'text-gray-600'} mb-1">
+                        ${message.username}
+                    </div>
+                    <div class="mb-2">
+                        <img src="${message.imageUrl}" 
+                             alt="${message.originalname || '画像'}" 
+                             class="max-w-full max-h-80 rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+                             onclick="openImageModal('${message.imageUrl}', '${message.originalname || '画像'}')">
+                    </div>
+                    ${message.message ? `<div class="break-words">${escapeHtml(message.message)}</div>` : ''}
+                    <div class="text-xs ${isOwnMessage ? 'text-indigo-200' : 'text-gray-500'} mt-1 text-right">
+                        ${timeString}
+                    </div>
+                `;
+            } else {
+                // Text message
+                messageContent = `
                     <div class="font-semibold text-sm ${isOwnMessage ? 'text-indigo-100' : 'text-gray-600'} mb-1">
                         ${message.username}
                     </div>
@@ -302,6 +406,15 @@
                     <div class="text-xs ${isOwnMessage ? 'text-indigo-200' : 'text-gray-500'} mt-1 text-right">
                         ${timeString}
                     </div>
+                `;
+            }
+            
+            messageDiv.innerHTML = `
+                <div class="${isOwnMessage 
+                    ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white' 
+                    : 'bg-gray-100 text-gray-800'
+                } max-w-xs lg:max-w-md px-4 py-2 rounded-2xl">
+                    ${messageContent}
                 </div>
             `;
             
@@ -381,6 +494,71 @@
             
             // Scroll to show typing indicator
             scrollToBottom();
+        }
+        
+        // Upload indicator functions
+        function showUploadingMessage() {
+            const messagesContainer = document.getElementById('messagesContainer');
+            const noMessagesDiv = document.getElementById('noMessages');
+            noMessagesDiv.style.display = 'none';
+            
+            const uploadDiv = document.createElement('div');
+            uploadDiv.id = 'uploadingIndicator';
+            uploadDiv.className = 'flex justify-end';
+            
+            uploadDiv.innerHTML = `
+                <div class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white max-w-xs lg:max-w-md px-4 py-2 rounded-2xl opacity-70">
+                    <div class="font-semibold text-sm text-indigo-100 mb-1">
+                        ${username}
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <div class="flex space-x-1">
+                            <div class="w-2 h-2 bg-white rounded-full animate-bounce" style="animation-delay: 0ms;"></div>
+                            <div class="w-2 h-2 bg-white rounded-full animate-bounce" style="animation-delay: 150ms;"></div>
+                            <div class="w-2 h-2 bg-white rounded-full animate-bounce" style="animation-delay: 300ms;"></div>
+                        </div>
+                        <span class="text-sm">画像をアップロード中...</span>
+                    </div>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(uploadDiv);
+            scrollToBottom();
+        }
+        
+        function hideUploadingMessage() {
+            const uploadDiv = document.getElementById('uploadingIndicator');
+            if (uploadDiv) {
+                uploadDiv.remove();
+            }
+        }
+        
+        // Image modal functions
+        function openImageModal(imageUrl, imageName) {
+            // Create modal overlay
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center';
+            modal.style.zIndex = '9999';
+            modal.onclick = (e) => {
+                if (e.target === modal) {
+                    modal.remove();
+                }
+            };
+            
+            modal.innerHTML = `
+                <div class="max-w-4xl max-h-full p-4 relative">
+                    <button onclick="this.closest('.fixed').remove()" 
+                            class="absolute top-2 right-2 text-white bg-black bg-opacity-50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-opacity-75 transition-all">
+                        ×
+                    </button>
+                    <img src="${imageUrl}" 
+                         alt="${imageName}" 
+                         class="max-w-full max-h-full object-contain rounded-lg">
+                    <p class="text-white text-center mt-2">${imageName}</p>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
         }
         
         // Handle page unload

@@ -3,6 +3,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +16,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 app.use('/sounds', express.static('sounds'));
+app.use('/uploads', express.static('uploads'));
 
 // Admin credentials
 const ADMIN_ID = 'admin';
@@ -23,6 +25,40 @@ const ADMIN_PASSWORD = 'admin123';
 // Data file paths
 const ROOMS_FILE = path.join(__dirname, 'data', 'rooms.json');
 const MESSAGES_FILE = path.join(__dirname, 'data', 'messages.json');
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+
+// Ensure uploads directory exists
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Configure multer for image uploads - use temporary storage first
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    // Use a temporary uploads directory first
+    cb(null, UPLOADS_DIR);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename with timestamp
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'temp-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: function (req, file, cb) {
+    // Only allow image files
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  }
+});
 
 // Helper functions for file operations
 function readRooms() {
@@ -61,6 +97,26 @@ function readMessages() {
 
 function writeMessages(messages) {
   fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2));
+}
+
+// Helper function to delete room images
+function deleteRoomImages(roomId) {
+  const roomUploadDir = path.join(UPLOADS_DIR, roomId);
+  if (fs.existsSync(roomUploadDir)) {
+    try {
+      // Delete all files in the room directory
+      const files = fs.readdirSync(roomUploadDir);
+      files.forEach(file => {
+        fs.unlinkSync(path.join(roomUploadDir, file));
+      });
+      
+      // Remove the empty directory
+      fs.rmdirSync(roomUploadDir);
+      console.log(`Deleted images for room ${roomId}`);
+    } catch (error) {
+      console.error(`Error deleting images for room ${roomId}:`, error);
+    }
+  }
 }
 
 // Store connected users
@@ -168,6 +224,70 @@ app.post('/api/join-room', (req, res) => {
   res.json({ success: true });
 });
 
+// Image upload endpoint
+app.post('/api/upload-image', upload.single('image'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No image file provided' });
+    }
+
+    const { roomId, username } = req.body;
+    
+    if (!roomId || !username) {
+      // Delete the uploaded file if roomId or username is missing
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ success: false, error: 'Room ID and username are required' });
+    }
+
+    // Verify the room exists
+    const rooms = readRooms();
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) {
+      // Delete the uploaded file if room doesn't exist
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ success: false, error: 'Room not found' });
+    }
+
+    // Create room-specific directory if it doesn't exist
+    const roomUploadDir = path.join(UPLOADS_DIR, roomId);
+    if (!fs.existsSync(roomUploadDir)) {
+      fs.mkdirSync(roomUploadDir, { recursive: true });
+    }
+
+    // Move file from temp location to room-specific directory
+    const originalPath = req.file.path;
+    const finalFilename = req.file.filename.replace('temp-', '');
+    const finalPath = path.join(roomUploadDir, finalFilename);
+    
+    // Move the file
+    fs.renameSync(originalPath, finalPath);
+
+    const imageUrl = `/uploads/${roomId}/${finalFilename}`;
+    
+    res.json({ 
+      success: true, 
+      imageUrl,
+      filename: finalFilename,
+      originalname: req.file.originalname,
+      size: req.file.size
+    });
+    
+  } catch (error) {
+    console.error('Image upload error:', error);
+    
+    // Clean up temporary file if it exists
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanupError) {
+        console.error('Error cleaning up temp file:', cleanupError);
+      }
+    }
+    
+    res.status(500).json({ success: false, error: 'Image upload failed' });
+  }
+});
+
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('ユーザーが接続しました:', socket.id);
@@ -224,7 +344,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send-message', (data) => {
-    const { roomId, message, username } = data;
+    const { roomId, message, username, imageUrl, originalname } = data;
     
     // Validate user is in the room
     const user = connectedUsers.get(socket.id);
@@ -245,6 +365,15 @@ io.on('connection', (socket) => {
       message,
       timestamp: new Date().toISOString()
     };
+
+    // Add image data if present
+    if (imageUrl) {
+      messageData.imageUrl = imageUrl;
+      messageData.originalname = originalname;
+      messageData.type = 'image';
+    } else {
+      messageData.type = 'text';
+    }
 
     const messages = readMessages();
     if (!messages[roomId]) {
@@ -350,6 +479,9 @@ function handleUserLeave(socket) {
             const messages = readMessages();
             delete messages[roomId];
             writeMessages(messages);
+            
+            // Delete room images
+            deleteRoomImages(roomId);
           }
           
           // Remove timeout from tracking
