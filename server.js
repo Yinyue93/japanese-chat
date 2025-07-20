@@ -66,6 +66,7 @@ function writeMessages(messages) {
 // Store connected users
 const connectedUsers = new Map();
 const roomUsers = new Map();
+const typingUsers = new Map(); // Store typing status for each room
 
 // Routes
 app.get('/', (req, res) => {
@@ -233,6 +234,12 @@ io.on('connection', (socket) => {
       return;
     }
     
+    // Stop typing when sending a message
+    if (typingUsers.has(roomId)) {
+      typingUsers.get(roomId).delete(username);
+      socket.to(roomId).emit('user-stopped-typing', { username });
+    }
+    
     const messageData = {
       username,
       message,
@@ -247,6 +254,45 @@ io.on('connection', (socket) => {
     writeMessages(messages);
 
     io.to(roomId).emit('new-message', messageData);
+  });
+
+  socket.on('typing', (data) => {
+    const { roomId, username } = data;
+    
+    // Validate user is in the room
+    const user = connectedUsers.get(socket.id);
+    if (!user || user.roomId !== roomId) {
+      return;
+    }
+    
+    // Initialize typing users for room if not exists
+    if (!typingUsers.has(roomId)) {
+      typingUsers.set(roomId, new Set());
+    }
+    
+    // Add user to typing list
+    typingUsers.get(roomId).add(username);
+    
+    // Broadcast to other users in the room
+    socket.to(roomId).emit('user-typing', { username });
+  });
+
+  socket.on('stop-typing', (data) => {
+    const { roomId, username } = data;
+    
+    // Validate user is in the room
+    const user = connectedUsers.get(socket.id);
+    if (!user || user.roomId !== roomId) {
+      return;
+    }
+    
+    // Remove user from typing list
+    if (typingUsers.has(roomId)) {
+      typingUsers.get(roomId).delete(username);
+    }
+    
+    // Broadcast to other users in the room
+    socket.to(roomId).emit('user-stopped-typing', { username });
   });
 
   socket.on('leave-room', () => {
@@ -264,6 +310,12 @@ function handleUserLeave(socket) {
   if (user) {
     const { username, roomId } = user;
     console.log(`User leaving: ${username} from room ${roomId}`);
+    
+    // Remove user from typing list when they leave
+    if (typingUsers.has(roomId)) {
+      typingUsers.get(roomId).delete(username);
+      socket.to(roomId).emit('user-stopped-typing', { username });
+    }
     
     // Remove from room users
     if (roomUsers.has(roomId)) {

@@ -64,6 +64,18 @@
                 </div>
             </div>
             
+            <!-- Typing Indicator -->
+            <div id="typingIndicator" class="mb-4" style="display: none;">
+                <div class="flex items-center space-x-2 text-gray-600 text-sm">
+                    <div class="flex space-x-1">
+                        <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0ms;"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 150ms;"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 300ms;"></div>
+                    </div>
+                    <span id="typingText">入力中...</span>
+                </div>
+            </div>
+            
             <!-- Message Input -->
             <div class="border-t border-gray-200 pt-4">
                 <form id="messageForm" class="flex space-x-4">
@@ -101,6 +113,9 @@
         }
         
         let userCount = 0;
+        let typingUsers = new Set();
+        let isTyping = false;
+        let typingTimeout;
         
 
         
@@ -188,10 +203,40 @@
             scrollToBottom();
         });
         
+        // Typing indicator events
+        socket.on('user-typing', (data) => {
+            typingUsers.add(data.username);
+            updateTypingIndicator();
+        });
+        
+        socket.on('user-stopped-typing', (data) => {
+            typingUsers.delete(data.username);
+            updateTypingIndicator();
+        });
+        
         // Message form submission
         document.getElementById('messageForm').addEventListener('submit', (e) => {
             e.preventDefault();
             sendMessage();
+        });
+        
+        // Typing detection
+        document.getElementById('messageInput').addEventListener('input', () => {
+            if (!isTyping) {
+                isTyping = true;
+                socket.emit('typing', { roomId, username });
+            }
+            
+            // Clear existing timeout
+            clearTimeout(typingTimeout);
+            
+            // Set new timeout to stop typing
+            typingTimeout = setTimeout(() => {
+                if (isTyping) {
+                    isTyping = false;
+                    socket.emit('stop-typing', { roomId, username });
+                }
+            }, 1000); // Stop typing after 1 second of no input
         });
         
         // Function to send message
@@ -209,6 +254,13 @@
             if (!socket.connected) {
                 alert('サーバーに接続されていません。ページを更新してください。');
                 return;
+            }
+            
+            // Stop typing when sending message
+            if (isTyping) {
+                isTyping = false;
+                clearTimeout(typingTimeout);
+                socket.emit('stop-typing', { roomId, username });
             }
             
             console.log('Sending message:', { roomId, message, username });
@@ -302,8 +354,40 @@
             }
         }
         
+        function updateTypingIndicator() {
+            const typingIndicator = document.getElementById('typingIndicator');
+            const typingText = document.getElementById('typingText');
+            
+            if (typingUsers.size === 0) {
+                typingIndicator.style.display = 'none';
+                return;
+            }
+            
+            const typingArray = Array.from(typingUsers);
+            let text = '';
+            
+            if (typingArray.length === 1) {
+                text = `${typingArray[0]}さんが入力中...`;
+            } else if (typingArray.length === 2) {
+                text = `${typingArray[0]}さんと${typingArray[1]}さんが入力中...`;
+            } else if (typingArray.length === 3) {
+                text = `${typingArray[0]}さん、${typingArray[1]}さん、${typingArray[2]}さんが入力中...`;
+            } else {
+                text = `${typingArray.length}人が入力中...`;
+            }
+            
+            typingText.textContent = text;
+            typingIndicator.style.display = 'block';
+            
+            // Scroll to show typing indicator
+            scrollToBottom();
+        }
+        
         // Handle page unload
         window.addEventListener('beforeunload', () => {
+            if (isTyping) {
+                socket.emit('stop-typing', { roomId, username });
+            }
             socket.emit('leave-room');
         });
         
