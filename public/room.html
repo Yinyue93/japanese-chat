@@ -168,12 +168,7 @@
             if (messages.length > 0) {
                 noMessagesDiv.style.display = 'none';
                 messages.forEach(message => {
-                    // Display all messages in chronological order
-                    if (message.type === 'system') {
-                        addSystemMessage(message.message);
-                    } else {
-                        addMessageToUI(message);
-                    }
+                    addMessageToUI(message);
                 });
                 scrollToBottom();
             }
@@ -183,23 +178,13 @@
             console.log('Received new message:', message);
             const noMessagesDiv = document.getElementById('noMessages');
             noMessagesDiv.style.display = 'none';
-            
-            // Handle both regular messages and system messages
-            if (message.type === 'system') {
-                console.log(`System message filtering: "${message.username}" !== "${username}" = ${message.username !== username}`);
-                // TEMPORARILY DISABLED FILTERING - Show all system messages for debugging
-                console.log('🔧 DEBUG: Showing ALL system messages (filtering disabled)');
-                addSystemMessage(message.message);
-            } else {
-                addMessageToUI(message);
-                
-                // Play notification sound for messages from other users
-                if (message.username !== username) {
-                    playNotificationSound();
-                }
-            }
-            
+            addMessageToUI(message);
             scrollToBottom();
+            
+            // Play notification sound for messages from other users
+            if (message.username !== username) {
+                playNotificationSound();
+            }
         });
         
         socket.on('message-error', (data) => {
@@ -210,13 +195,15 @@
         socket.on('user-joined', (data) => {
             userCount = data.userCount;
             document.getElementById('userCount').textContent = userCount;
-            // System message will be handled via 'new-message' event
+            addSystemMessage(`${data.username}さんが入室しました`);
+            scrollToBottom();
         });
         
         socket.on('user-left', (data) => {
             userCount = data.userCount;
             document.getElementById('userCount').textContent = userCount;
-            // System message will be handled via 'new-message' event
+            addSystemMessage(`${data.username}さんが退室しました`);
+            scrollToBottom();
         });
         
         // Typing indicator events
