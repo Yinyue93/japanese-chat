@@ -7,7 +7,18 @@ const multer = require('multer');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+  cors: {
+    origin: "*", // Allow all origins - you can restrict this to your domain
+    methods: ["GET", "POST"],
+    allowedHeaders: ["content-type"],
+    credentials: false
+  },
+  transports: ['websocket', 'polling'], // Try websocket first, fallback to polling
+  allowEIO3: true, // Backward compatibility
+  pingTimeout: 60000, // Increase timeout for slower connections
+  pingInterval: 25000 // Heartbeat interval
+});
 
 const PORT = process.env.PORT || 3000;
 

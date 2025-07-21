@@ -104,7 +104,15 @@
     </div>
     
     <script>
-        const socket = io();
+        const socket = io({
+            transports: ['websocket', 'polling'], // Try websocket first, fallback to polling
+            timeout: 20000, // Connection timeout
+            forceNew: true, // Force new connection
+            reconnection: true, // Enable reconnection
+            reconnectionDelay: 1000, // Reconnection delay
+            reconnectionAttempts: 5, // Max reconnection attempts
+            maxReconnectionAttempts: 5
+        });
         const username = localStorage.getItem('username');
         const roomId = window.location.pathname.split('/')[2];
         
@@ -149,16 +157,40 @@
         
         socket.on('connect', () => {
             console.log('Socket connected successfully');
+            console.log('Transport:', socket.io.engine.transport.name);
+            console.log('Socket ID:', socket.id);
         });
         
-        socket.on('disconnect', () => {
-            console.log('Socket disconnected');
+        socket.on('disconnect', (reason) => {
+            console.log('Socket disconnected:', reason);
+            if (reason === 'io server disconnect') {
+                // Server disconnected, try to reconnect manually
+                socket.connect();
+            }
             alert('サーバーとの接続が切断されました。');
         });
         
         socket.on('connect_error', (error) => {
             console.error('Socket connection error:', error);
+            console.error('Error details:', {
+                description: error.description,
+                context: error.context,
+                type: error.type
+            });
             alert('サーバーへの接続に失敗しました。');
+        });
+        
+        socket.on('reconnect', (attemptNumber) => {
+            console.log('Socket reconnected after', attemptNumber, 'attempts');
+        });
+        
+        socket.on('reconnect_error', (error) => {
+            console.error('Socket reconnection error:', error);
+        });
+        
+        socket.on('reconnect_failed', () => {
+            console.error('Socket reconnection failed');
+            alert('サーバーへの再接続に失敗しました。ページを更新してください。');
         });
         
         socket.on('room-messages', (messages) => {
@@ -208,11 +240,13 @@
         
         // Typing indicator events
         socket.on('user-typing', (data) => {
+            console.log('User typing:', data.username);
             typingUsers.add(data.username);
             updateTypingIndicator();
         });
         
         socket.on('user-stopped-typing', (data) => {
+            console.log('User stopped typing:', data.username);
             typingUsers.delete(data.username);
             updateTypingIndicator();
         });
@@ -225,8 +259,14 @@
         
         // Typing detection
         document.getElementById('messageInput').addEventListener('input', () => {
+            if (!socket.connected) {
+                console.warn('Cannot send typing indicator - socket not connected');
+                return;
+            }
+            
             if (!isTyping) {
                 isTyping = true;
+                console.log('Sending typing indicator');
                 socket.emit('typing', { roomId, username });
             }
             
@@ -237,6 +277,7 @@
             typingTimeout = setTimeout(() => {
                 if (isTyping) {
                     isTyping = false;
+                    console.log('Sending stop typing indicator');
                     socket.emit('stop-typing', { roomId, username });
                 }
             }, 1000); // Stop typing after 1 second of no input
