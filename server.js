@@ -99,6 +99,30 @@ function writeMessages(messages) {
   fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2));
 }
 
+// Helper function to store system messages (joins, leaves, etc.)
+function storeSystemMessage(roomId, username, action, userCount) {
+  const messages = readMessages();
+  if (!messages[roomId]) {
+    messages[roomId] = [];
+  }
+  
+  const systemMessage = {
+    type: 'system',
+    action: action, // 'join' or 'leave'
+    username: username,
+    message: action === 'join' 
+      ? `${username}さんが入室しました` 
+      : `${username}さんが退室しました`,
+    userCount: userCount,
+    timestamp: new Date().toISOString()
+  };
+  
+  messages[roomId].push(systemMessage);
+  writeMessages(messages);
+  
+  return systemMessage;
+}
+
 // Helper function to delete room images
 function deleteRoomImages(roomId) {
   const roomUploadDir = path.join(UPLOADS_DIR, roomId);
@@ -335,9 +359,18 @@ io.on('connection', (socket) => {
 
     console.log(`User ${username} successfully joined room ${roomId}`);
     socket.emit('joined-room', { roomId, roomName: room.name });
+    
+    // Store system message for user join
+    const joinMessage = storeSystemMessage(roomId, username, 'join', room.users.length);
+    console.log(`Broadcasting join message to room ${roomId}:`, joinMessage);
+    
+    // Emit user-joined event (for real-time notifications and user count updates)
     io.to(roomId).emit('user-joined', { username, userCount: room.users.length });
+    
+    // Broadcast the system message to all users in room (including as part of message history)
+    io.to(roomId).emit('new-message', joinMessage);
 
-    // Send existing messages
+    // Send existing messages (including the new join message for the joining user)
     const messages = readMessages();
     const roomMessages = messages[roomId] || [];
     socket.emit('room-messages', roomMessages);
@@ -498,7 +531,15 @@ function handleUserLeave(socket) {
         if (room) {
           room.users = room.users.filter(u => u !== username);
           writeRooms(rooms);
+          
+          // Store system message for user leave
+          const leaveMessage = storeSystemMessage(roomId, username, 'leave', room.users.length);
+          
+          // Emit user-left event (for real-time notifications and user count updates)
           io.to(roomId).emit('user-left', { username, userCount: room.users.length });
+          
+          // Broadcast the system message to remaining users in room
+          io.to(roomId).emit('new-message', leaveMessage);
         }
       }
     }
