@@ -147,6 +147,18 @@
         socket.on('joined-room', (data) => {
             console.log('Successfully joined room:', data);
             document.getElementById('roomName').textContent = data.roomName;
+            if (data.userCount !== undefined) {
+                userCount = data.userCount;
+                document.getElementById('userCount').textContent = userCount;
+            }
+        });
+        
+        socket.on('users-already-present', (data) => {
+            console.log('Users already present:', data.users);
+            data.users.forEach(user => {
+                addSystemMessage(`${user}さんが既にオンラインです`);
+            });
+            scrollToBottom();
         });
         
         socket.on('join-room-error', (data) => {
@@ -167,7 +179,6 @@
                 // Server disconnected, try to reconnect manually
                 socket.connect();
             }
-            alert('サーバーとの接続が切断されました。');
         });
         
         socket.on('connect_error', (error) => {
@@ -182,6 +193,9 @@
         
         socket.on('reconnect', (attemptNumber) => {
             console.log('Socket reconnected after', attemptNumber, 'attempts');
+            // Automatically rejoin the room on reconnection for presence tracking
+            console.log('Rejoining room after reconnect:', { roomId, username });
+            socket.emit('join-room', { roomId, username });
         });
         
         socket.on('reconnect_error', (error) => {
@@ -224,16 +238,23 @@
             alert(`メッセージの送信に失敗しました: ${data.error}`);
         });
         
-        socket.on('user-joined', (data) => {
-            userCount = data.userCount;
-            document.getElementById('userCount').textContent = userCount;
+        // Presence tracking events (now handles both presence and user count)
+        socket.on('user-login', (data) => {
+            console.log('User came online:', data.username);
+            if (data.userCount !== undefined) {
+                userCount = data.userCount;
+                document.getElementById('userCount').textContent = userCount;
+            }
             addSystemMessage(`${data.username}さんが入室しました`);
             scrollToBottom();
         });
         
-        socket.on('user-left', (data) => {
-            userCount = data.userCount;
-            document.getElementById('userCount').textContent = userCount;
+        socket.on('user-logout', (data) => {
+            console.log('User went offline:', data.username);
+            if (data.userCount !== undefined) {
+                userCount = data.userCount;
+                document.getElementById('userCount').textContent = userCount;
+            }
             addSystemMessage(`${data.username}さんが退室しました`);
             scrollToBottom();
         });
@@ -398,10 +419,8 @@
         
         // Leave room button
         document.getElementById('leaveRoomBtn').addEventListener('click', () => {
-            if (confirm('本当に退室しますか？')) {
-                socket.emit('leave-room');
-                window.location.href = '/lounge';
-            }
+            socket.emit('explicit-leave-room');
+            window.location.href = '/lounge';
         });
         
         // Functions
@@ -432,7 +451,7 @@
                              class="max-w-full max-h-80 rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
                              onclick="openImageModal('${message.imageUrl}', '${message.originalname || '画像'}')">
                     </div>
-                    ${message.message ? `<div class="break-words">${escapeHtml(message.message)}</div>` : ''}
+                    ${message.message ? `<div class="break-words">${linkifyUrls(message.message, isOwnMessage)}</div>` : ''}
                     <div class="text-xs ${isOwnMessage ? 'text-indigo-200' : 'text-gray-500'} mt-1 text-right">
                         ${timeString}
                     </div>
@@ -443,7 +462,7 @@
                     <div class="font-semibold text-sm ${isOwnMessage ? 'text-indigo-100' : 'text-gray-600'} mb-1">
                         ${message.username}
                     </div>
-                    <div class="break-words">${escapeHtml(message.message)}</div>
+                    <div class="break-words">${linkifyUrls(message.message, isOwnMessage)}</div>
                     <div class="text-xs ${isOwnMessage ? 'text-indigo-200' : 'text-gray-500'} mt-1 text-right">
                         ${timeString}
                     </div>
@@ -486,6 +505,60 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+        
+        function linkifyUrls(text, isOwnMessage = false) {
+            if (!text) return '';
+            
+            // URL regex pattern - matches http://, https://, and www. URLs
+            const urlRegex = /(?:(?:https?:\/\/)|(?:www\.))[\w\-._~:/?#[\]@!$&'()*+,;=%]+/gi;
+            
+            // Choose link colors based on message type
+            const linkClasses = isOwnMessage 
+                ? "text-cyan-300 hover:text-cyan-100 underline break-all" 
+                : "text-blue-500 hover:text-blue-700 underline break-all";
+            
+            // Split text by URLs and process each part
+            const parts = [];
+            let lastIndex = 0;
+            let match;
+            
+            while ((match = urlRegex.exec(text)) !== null) {
+                // Add text before URL (escaped)
+                if (match.index > lastIndex) {
+                    parts.push(escapeHtml(text.slice(lastIndex, match.index)));
+                }
+                
+                // Add linkified URL
+                let url = match[0];
+                let href = url;
+                let displayUrl = url;
+                
+                // Add https:// protocol if URL starts with www.
+                if (url.toLowerCase().startsWith('www.')) {
+                    href = 'https://' + url;
+                }
+                
+                // Truncate very long URLs for display
+                if (displayUrl.length > 50) {
+                    displayUrl = displayUrl.substring(0, 47) + '...';
+                }
+                
+                // Escape the display URL for safety
+                const escapedDisplayUrl = escapeHtml(displayUrl);
+                const escapedHref = escapeHtml(href);
+                
+                parts.push(`<a href="${escapedHref}" target="_blank" rel="noopener noreferrer" class="${linkClasses}">${escapedDisplayUrl}</a>`);
+                
+                lastIndex = urlRegex.lastIndex;
+            }
+            
+            // Add remaining text after last URL (escaped)
+            if (lastIndex < text.length) {
+                parts.push(escapeHtml(text.slice(lastIndex)));
+            }
+            
+            return parts.join('');
         }
         
         function playNotificationSound() {
@@ -607,7 +680,8 @@
             if (isTyping) {
                 socket.emit('stop-typing', { roomId, username });
             }
-            socket.emit('leave-room');
+            // Don't send explicit-leave-room on beforeunload - let natural disconnect handling take care of it
+            // This prevents unwanted leave/join messages on page refresh
         });
         
         // Focus on message input

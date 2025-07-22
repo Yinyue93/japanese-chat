@@ -135,6 +135,130 @@ const connectedUsers = new Map();
 const roomUsers = new Map();
 const typingUsers = new Map(); // Store typing status for each room
 
+// Room presence tracking - Map<roomId:userId, { count, logoutTimer }>
+const roomPresence = new Map();
+
+// Helper function to generate presence key
+function getPresenceKey(roomId, userId) {
+  return `${roomId}:${userId}`;
+}
+
+// Helper function to join room with presence tracking
+function joinRoom(socket, roomId, userId) {
+  console.log(`joinRoom called for ${userId} in room ${roomId}`);
+  
+  const presenceKey = getPresenceKey(roomId, userId);
+  const currentPresence = roomPresence.get(presenceKey) || { count: 0, logoutTimer: null };
+  
+  // Check if there was a pending logout timer (indicates reconnection)
+  const wasReconnecting = currentPresence.logoutTimer !== null;
+  
+  // Clear any pending logout timer
+  if (currentPresence.logoutTimer) {
+    console.log(`Clearing logout timer for ${userId} in room ${roomId} (reconnection detected)`);
+    clearTimeout(currentPresence.logoutTimer);
+    currentPresence.logoutTimer = null;
+  }
+  
+  // Increment presence count
+  currentPresence.count++;
+  roomPresence.set(presenceKey, currentPresence);
+  
+  console.log(`User ${userId} presence count in room ${roomId}: ${currentPresence.count}`);
+  
+  // Only broadcast login if this is the first presence AND not a reconnection
+  if (currentPresence.count === 1 && !wasReconnecting) {
+    console.log(`Broadcasting login for ${userId} in room ${roomId}`);
+    // Get current room info for user count
+    const rooms = readRooms();
+    const room = rooms.find(r => r.id === roomId);
+    const userCount = room ? room.users.length : 0;
+    socket.to(roomId).emit('user-login', { username: userId, userCount });
+  } else if (wasReconnecting) {
+    console.log(`Skipping login broadcast for ${userId} in room ${roomId} - was reconnecting`);
+  }
+  
+  // Join the socket room
+  socket.join(roomId);
+}
+
+// Helper function to leave room with presence tracking
+function leaveRoom(socket, roomId, userId) {
+  console.log(`leaveRoom called for ${userId} in room ${roomId}`);
+  
+  handleLeave(roomId, userId);
+  socket.leave(roomId);
+}
+
+// Helper function for explicit leave (immediate logout, no grace period)
+function handleExplicitLeave(socket, roomId, userId) {
+  console.log(`handleExplicitLeave called for ${userId} in room ${roomId}`);
+  
+  const presenceKey = getPresenceKey(roomId, userId);
+  const currentPresence = roomPresence.get(presenceKey);
+  
+  if (currentPresence) {
+    // Clear any existing logout timer
+    if (currentPresence.logoutTimer) {
+      clearTimeout(currentPresence.logoutTimer);
+      currentPresence.logoutTimer = null;
+    }
+    
+    // Immediately broadcast logout message
+    const rooms = readRooms();
+    const room = rooms.find(r => r.id === roomId);
+    // Subtract 1 from userCount since this user is leaving
+    const userCount = room ? Math.max(0, room.users.length - 1) : 0;
+    console.log(`Broadcasting immediate logout for ${userId} in room ${roomId}`);
+    io.to(roomId).emit('user-logout', { username: userId, userCount });
+    
+    // Clean up presence entry
+    roomPresence.delete(presenceKey);
+  }
+  
+  socket.leave(roomId);
+}
+
+// Common leave handling function
+function handleLeave(roomId, userId) {
+  const presenceKey = getPresenceKey(roomId, userId);
+  const currentPresence = roomPresence.get(presenceKey);
+  
+  if (!currentPresence || currentPresence.count <= 0) {
+    console.log(`No presence found for ${userId} in room ${roomId}`);
+    return;
+  }
+  
+  // Clear any existing logout timer
+  if (currentPresence.logoutTimer) {
+    clearTimeout(currentPresence.logoutTimer);
+    currentPresence.logoutTimer = null;
+  }
+  
+  // Decrement presence count
+  currentPresence.count--;
+  console.log(`User ${userId} presence count in room ${roomId}: ${currentPresence.count}`);
+  
+  if (currentPresence.count <= 0) {
+    // Start 5-second logout timer
+    console.log(`Starting logout timer for ${userId} in room ${roomId}`);
+    currentPresence.logoutTimer = setTimeout(() => {
+      console.log(`Broadcasting logout for ${userId} in room ${roomId}`);
+      // Get current room info for user count
+      const rooms = readRooms();
+      const room = rooms.find(r => r.id === roomId);
+      const userCount = room ? room.users.length : 0;
+      io.to(roomId).emit('user-logout', { username: userId, userCount });
+      
+      // Clean up presence entry
+      roomPresence.delete(presenceKey);
+    }, 5000);
+  }
+  
+  // Update the presence store
+  roomPresence.set(presenceKey, currentPresence);
+}
+
 // Routes
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
@@ -322,9 +446,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Successfully join room
-    socket.join(roomId);
-    
     // Cancel any pending room deletion
     if (global.roomDeletionTimeouts && global.roomDeletionTimeouts.has(roomId)) {
       console.log(`Canceling scheduled deletion for room ${roomId} - user rejoining`);
@@ -337,6 +458,9 @@ io.on('connection', (socket) => {
       writeRooms(rooms);
     }
 
+    // Use the new joinRoom helper for presence tracking (after user is added to room)
+    joinRoom(socket, roomId, username);
+
     connectedUsers.set(socket.id, { username, roomId });
     
     if (!roomUsers.has(roomId)) {
@@ -345,8 +469,20 @@ io.on('connection', (socket) => {
     roomUsers.get(roomId).add(socket.id);
 
     console.log(`User ${username} successfully joined room ${roomId}`);
-    socket.emit('joined-room', { roomId, roomName: room.name });
-    io.to(roomId).emit('user-joined', { username, userCount: room.users.length });
+    socket.emit('joined-room', { roomId, roomName: room.name, userCount: room.users.length });
+    // Note: user-login/logout messages are now handled by presence tracking in joinRoom()
+
+    // Send information about users already present in the room
+    const presentUsers = [];
+    for (const [presenceKey, presence] of roomPresence.entries()) {
+      const [keyRoomId, userId] = presenceKey.split(':');
+      if (keyRoomId === roomId && presence.count > 0 && userId !== username) {
+        presentUsers.push(userId);
+      }
+    }
+    if (presentUsers.length > 0) {
+      socket.emit('users-already-present', { users: presentUsers });
+    }
 
     // Send existing messages
     const messages = readMessages();
@@ -436,20 +572,40 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave-room', () => {
+    const user = connectedUsers.get(socket.id);
+    if (user) {
+      const { username, roomId } = user;
+      leaveRoom(socket, roomId, username);
+    }
     handleUserLeave(socket);
+  });
+
+  socket.on('explicit-leave-room', () => {
+    const user = connectedUsers.get(socket.id);
+    if (user) {
+      const { username, roomId } = user;
+      handleExplicitLeave(socket, roomId, username);
+    }
+    handleUserLeave(socket, true); // Pass true to indicate explicit leave
   });
 
   socket.on('disconnect', () => {
     console.log('ユーザーが切断しました:', socket.id);
-    handleUserLeave(socket);
+    const user = connectedUsers.get(socket.id);
+    if (user) {
+      const { username, roomId } = user;
+      // Handle presence tracking for disconnect
+      handleLeave(roomId, username);
+    }
+    handleUserLeave(socket, false); // Pass false to maintain grace period for disconnections
   });
 });
 
-function handleUserLeave(socket) {
+function handleUserLeave(socket, isExplicitLeave = true) {
   const user = connectedUsers.get(socket.id);
   if (user) {
     const { username, roomId } = user;
-    console.log(`User leaving: ${username} from room ${roomId}`);
+    console.log(`User leaving: ${username} from room ${roomId}, explicit: ${isExplicitLeave}`);
     
     // Remove user from typing list when they leave
     if (typingUsers.has(roomId)) {
@@ -461,55 +617,82 @@ function handleUserLeave(socket) {
     if (roomUsers.has(roomId)) {
       roomUsers.get(roomId).delete(socket.id);
       
-      // If no more users in room, schedule room deletion with grace period
+      // If no more users in room, handle room deletion
       if (roomUsers.get(roomId).size === 0) {
-        console.log(`Room ${roomId} is empty, scheduling deletion in 10 seconds...`);
-        
-        // Clear any existing timeout for this room
-        if (global.roomDeletionTimeouts && global.roomDeletionTimeouts.has(roomId)) {
-          clearTimeout(global.roomDeletionTimeouts.get(roomId));
-        }
-        
-        // Initialize timeouts Map if it doesn't exist
-        if (!global.roomDeletionTimeouts) {
-          global.roomDeletionTimeouts = new Map();
-        }
-        
-        // Schedule room deletion after 10 seconds
-        const timeout = setTimeout(() => {
-          // Double-check the room is still empty
-          if (!roomUsers.has(roomId) || roomUsers.get(roomId).size === 0) {
-            console.log(`Deleting empty room after grace period: ${roomId}`);
-            roomUsers.delete(roomId);
-            
-            const rooms = readRooms();
-            const updatedRooms = rooms.filter(r => r.id !== roomId);
-            writeRooms(updatedRooms);
-            
-            // Clear messages for deleted room
-            const messages = readMessages();
-            delete messages[roomId];
-            writeMessages(messages);
-            
-            // Delete room images
-            deleteRoomImages(roomId);
-          }
+        if (isExplicitLeave) {
+          // Immediate deletion for explicit leave
+          console.log(`Room ${roomId} is empty after explicit leave, deleting immediately...`);
           
-          // Remove timeout from tracking
-          if (global.roomDeletionTimeouts) {
+          // Clear any existing timeout for this room
+          if (global.roomDeletionTimeouts && global.roomDeletionTimeouts.has(roomId)) {
+            clearTimeout(global.roomDeletionTimeouts.get(roomId));
             global.roomDeletionTimeouts.delete(roomId);
           }
-        }, 10000); // 10 second grace period
-        
-        global.roomDeletionTimeouts.set(roomId, timeout);
+          
+          // Delete room immediately
+          roomUsers.delete(roomId);
+          
+          const rooms = readRooms();
+          const updatedRooms = rooms.filter(r => r.id !== roomId);
+          writeRooms(updatedRooms);
+          
+          // Clear messages for deleted room
+          const messages = readMessages();
+          delete messages[roomId];
+          writeMessages(messages);
+          
+          // Delete room images
+          deleteRoomImages(roomId);
+        } else {
+          // Grace period for disconnection
+          console.log(`Room ${roomId} is empty after disconnect, scheduling deletion in 10 seconds...`);
+          
+          // Clear any existing timeout for this room
+          if (global.roomDeletionTimeouts && global.roomDeletionTimeouts.has(roomId)) {
+            clearTimeout(global.roomDeletionTimeouts.get(roomId));
+          }
+          
+          // Initialize timeouts Map if it doesn't exist
+          if (!global.roomDeletionTimeouts) {
+            global.roomDeletionTimeouts = new Map();
+          }
+          
+          // Schedule room deletion after 10 seconds
+          const timeout = setTimeout(() => {
+            // Double-check the room is still empty
+            if (!roomUsers.has(roomId) || roomUsers.get(roomId).size === 0) {
+              console.log(`Deleting empty room after grace period: ${roomId}`);
+              roomUsers.delete(roomId);
+              
+              const rooms = readRooms();
+              const updatedRooms = rooms.filter(r => r.id !== roomId);
+              writeRooms(updatedRooms);
+              
+              // Clear messages for deleted room
+              const messages = readMessages();
+              delete messages[roomId];
+              writeMessages(messages);
+              
+              // Delete room images
+              deleteRoomImages(roomId);
+            }
+            
+            // Remove timeout from tracking
+            if (global.roomDeletionTimeouts) {
+              global.roomDeletionTimeouts.delete(roomId);
+            }
+          }, 10000); // 10 second grace period
+          
+          global.roomDeletionTimeouts.set(roomId, timeout);
+        }
       } else {
-        // Update room user list
+        // Update room user list (but don't emit user-left - presence tracking handles this)
         const rooms = readRooms();
         const room = rooms.find(r => r.id === roomId);
         if (room) {
           room.users = room.users.filter(u => u !== username);
           writeRooms(rooms);
-          io.to(roomId).emit('user-left', { username, userCount: room.users.length });
+          // Note: user-logout message with updated count will be sent by presence tracking system
         }
       }
     }
